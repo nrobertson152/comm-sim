@@ -1,0 +1,135 @@
+name: Build Linux AppImage
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  appimage:
+    name: Test, then build and smoke-test the AppImage (x86_64)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt "pyinstaller>=6.10,<7"
+
+      - name: Run source tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          COMMSIM_STATE: ""
+        run: |
+          python tests/test_bits.py
+          python tests/test_protocols.py
+          python tests/test_input.py
+          python tests/test_labs.py
+          python run.py --selftest "$RUNNER_TEMP/source-shots"
+          test "$(find "$RUNNER_TEMP/source-shots" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 120
+
+      - name: Freeze executable using PyInstaller
+        run: |
+          pyinstaller --noconfirm --clean --onedir \
+            --name COMM-SIM \
+            --collect-all pygame \
+            run.py
+          test -x dist/COMM-SIM/COMM-SIM
+
+      - name: Assemble AppDir
+        run: |
+          mkdir -p AppDir/usr/lib/COMM-SIM
+          mkdir -p AppDir/usr/share/applications
+          mkdir -p AppDir/usr/share/icons/hicolor/256x256/apps
+          cp -a dist/COMM-SIM/. AppDir/usr/lib/COMM-SIM/
+
+          cat > AppDir/AppRun <<'SH'
+          #!/bin/sh
+          APPDIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+          exec "$APPDIR/usr/lib/COMM-SIM/COMM-SIM" "$@"
+          SH
+          chmod +x AppDir/AppRun
+
+          cat > AppDir/comm-sim.desktop <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=COMM-SIM
+          Comment=Communication protocol lab bench
+          Exec=COMM-SIM
+          Icon=comm-sim
+          Categories=Education;Science;
+          Terminal=false
+          DESKTOP
+          cp AppDir/comm-sim.desktop AppDir/usr/share/applications/
+
+          # A square icon: two bus wires carrying a frame, drawn with pygame.
+          SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy python - <<'PY'
+          import pygame
+
+          pygame.init()
+          icon = pygame.Surface((256, 256), pygame.SRCALPHA)
+          icon.fill((16, 18, 22, 255))
+          pygame.draw.rect(icon, (120, 100, 50), (8, 8, 240, 240), 4, border_radius=18)
+          hi, lo = 100, 156
+          x = 24
+          bits = [1, 0, 1, 1, 0, 0, 1, 0, 1, 1, 0, 1]
+          for b in bits:
+              y1, y2 = (hi - 20, lo + 20) if b else (hi, lo)
+              pygame.draw.line(icon, (255, 200, 70), (x, y1), (x + 17, y1), 6)
+              pygame.draw.line(icon, (90, 215, 255), (x, y2), (x + 17, y2), 6)
+              x += 17
+          pygame.draw.rect(icon, (70, 255, 120), (24, 196, 208, 14), border_radius=7)
+          pygame.image.save(icon, "AppDir/comm-sim.png")
+          pygame.quit()
+          PY
+          cp AppDir/comm-sim.png AppDir/usr/share/icons/hicolor/256x256/apps/
+
+      - name: Build AppImage
+        run: |
+          curl --fail --location --retry 3 \
+            -o appimagetool-x86_64.AppImage \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # Extract the packaging tool to avoid relying on FUSE on CI runners.
+          ./appimagetool-x86_64.AppImage --appimage-extract > /dev/null
+          ARCH=x86_64 ./squashfs-root/AppRun AppDir COMM-SIM-x86_64.AppImage
+          chmod +x COMM-SIM-x86_64.AppImage
+
+      - name: Smoke-test final AppImage
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          COMMSIM_STATE: ""
+        run: |
+          ./COMM-SIM-x86_64.AppImage --selftest "$RUNNER_TEMP/appimage-shots"
+          test "$(find "$RUNNER_TEMP/appimage-shots" -maxdepth 1 -type f -name '*.png' | wc -l)" -eq 120
+          sha256sum COMM-SIM-x86_64.AppImage > COMM-SIM-x86_64.AppImage.sha256
+
+      - name: Upload downloadable AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: COMM-SIM-linux-x86_64
+          path: |
+            COMM-SIM-x86_64.AppImage
+            COMM-SIM-x86_64.AppImage.sha256
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error

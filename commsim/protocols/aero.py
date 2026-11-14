@@ -1,0 +1,5 @@
+from .aero_a import ARINC429, ARINC629, AFDX, ARINC825, ARINC717, MIL1553, MIL1760, CANaerospace, ASCB, TTPC
+from .aero_b import ADSB, ModeS, ACARS, CPDLC, ASTERIX, SpaceWire, SpaceFibre, CCSDS
+
+ALL = [ARINC429, ARINC629, AFDX, ARINC825, ARINC717, MIL1553, MIL1760, CANaerospace, ASCB, ADSB, ModeS, ACARS, CPDLC, ASTERIX, TTPC,
+       SpaceWire, SpaceFibre, CCSDS]
